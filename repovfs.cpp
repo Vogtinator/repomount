@@ -137,7 +137,7 @@ bool RepoVFS::addRPM(const std::string &path)
     // Read the header
     Header hdr;
     if(int rc = rpmReadPackageFile(ts, f, path.c_str(), &hdr); rc != RPMRC_OK) {
-        rpmlog(RPMLOG_ERR, "%s: %d", path.c_str(), rc);
+        rpmlog(RPMLOG_ERR, "%s: %d\n", path.c_str(), rc);
         return false;
     }
     auto hdrfree = Defer([&] { headerFree(hdr); });
@@ -196,7 +196,7 @@ bool RepoVFS::addRPM(const std::string &path)
             if(thisNode) {
                 // Node already exists, only allowed for directories
                 if(!S_ISDIR(stat.st_mode) || !S_ISDIR(thisNode->stat.st_mode)) {
-                    rpmlog(RPMLOG_ERR, "%s has type mismatch", fn);
+                    rpmlog(RPMLOG_ERR, "%s has type mismatch\n", fn);
                     return false;
                 }
 
