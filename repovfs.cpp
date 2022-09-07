@@ -263,7 +263,7 @@ bool RepoVFS::addRPM(const std::string &path)
     return true;
 }
 
-bool RepoVFS::mountAndLoop(struct fuse_args &args, const std::string &path)
+bool RepoVFS::mount(struct fuse_args &args, const std::string &path)
 {
     fuseSession = fuse_session_new(&args, &fuse_ll_ops, sizeof(fuse_ll_ops), this);
     if (!fuseSession)
@@ -273,9 +273,39 @@ bool RepoVFS::mountAndLoop(struct fuse_args &args, const std::string &path)
         return false;
 
     fuse_set_signal_handlers(fuseSession);
+    return true;
+}
 
-    // Return false on request errors only, not clean unmounts or signals.
-    return fuse_session_loop(fuseSession) >= 0;
+int RepoVFS::fuseFD()
+{
+    return fuse_session_fd(fuseSession);
+}
+
+bool RepoVFS::processFuseRequests()
+{
+    // Never deallocated, just reused
+    static struct fuse_buf fbuf = {};
+
+    // Read requests until empty (-EAGAIN) or error
+    for(;;)
+    {
+        int res = fuse_session_receive_buf(fuseSession, &fbuf);
+
+        if (res == -EINTR || res == -EAGAIN)
+            break;
+
+        if (res <= 0)
+        {
+            if(res < 0) // Error
+                rpmlog(RPMLOG_ERR, "Error reading FUSE request: %s", strerror(errno));
+
+            return false;
+        }
+
+        fuse_session_process_buf(fuseSession, &fbuf);
+    }
+
+    return true;
 }
 
 void RepoVFS::replyEntry(fuse_req_t req, RepoVFS::Node *node)

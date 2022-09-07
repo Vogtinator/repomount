@@ -5,6 +5,8 @@
 */
 
 #include <dirent.h>
+#include <sys/epoll.h>
+#include <sys/inotify.h>
 
 #include <string>
 
@@ -57,6 +59,12 @@ int main(int argc, char *argv[])
     }
 
     RepoVFS vfs;
+    struct RpmDirWatch {
+        std::string path;
+        int inotifyWatch;
+    };
+
+    std::vector<RpmDirWatch> rpmdirs;
 
     // Add all given RPMs to the VFS
     for (auto &rpm : rmOpts.rpms) {
@@ -69,6 +77,7 @@ int main(int argc, char *argv[])
         // If the given path is a directory, add all .rpm files
         if (S_ISDIR(s.st_mode)) {
             DIR *d = opendir(rpm.c_str());
+            rpmdirs.push_back({rpm, -1});
             if (!d) {
                 fprintf(stderr, "Failed to open %s: %s\n", rpm.c_str(), strerror(errno));
                 return 1;
@@ -90,7 +99,93 @@ int main(int argc, char *argv[])
         }
     }
 
-    int ret = vfs.mountAndLoop(args, opts.mountpoint) ? 0 : 1;
+    if(!vfs.mount(args, opts.mountpoint))
+        return 1;
+
+    const int fuseFD = vfs.fuseFD();
+    // Set the FD to O_NONBLOCK so that it can be read in a loop until empty
+    int flags = fcntl(fuseFD, F_GETFL);
+    fcntl(fuseFD, F_SETFL, flags | O_NONBLOCK);
+
+    const int inotifyFD = inotify_init1(IN_NONBLOCK);
+    if(inotifyFD < 0) {
+        perror("inotify_init1");
+        return 1;
+    }
+
+    for(auto &dir : rpmdirs)
+        dir.inotifyWatch = inotify_add_watch(inotifyFD, dir.path.c_str(), IN_CLOSE_WRITE);
+
+    #define MAX_EVENTS 10
+    struct epoll_event ev, events[MAX_EVENTS];
+
+    int epollfd = epoll_create1(0);
+    if (epollfd < -1) {
+        perror("epoll_create1");
+        return 1;
+    }
+
+    ev.events = EPOLLIN;
+    ev.data.fd = fuseFD;
+    if(epoll_ctl(epollfd, EPOLL_CTL_ADD, fuseFD, &ev) == -1) {
+        perror("epoll_ctl");
+        return 1;
+    }
+
+    ev.events = EPOLLIN;
+    ev.data.fd = inotifyFD;
+    if(epoll_ctl(epollfd, EPOLL_CTL_ADD, inotifyFD, &ev) == -1) {
+        perror("epoll_ctl");
+        return 1;
+    }
+
+    while(!fuse_session_exited(vfs.fuseSession)) {
+        int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
+        if(nfds < -1) {
+            if(errno == EINTR)
+                continue;
+
+            perror("epoll_wait");
+            return 1;
+        }
+
+        for (int i = 0; i < nfds; ++i) {
+           if (events[i].data.fd == fuseFD) {
+               if(!vfs.processFuseRequests()) {
+                   perror("processing FUSE request");
+                   return 1;
+               }
+           } else if(events[i].data.fd == inotifyFD) {
+                char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
+                const struct inotify_event *event;
+                ssize_t len;
+
+                len = read(inotifyFD, buf, sizeof(buf));
+                if(len == -1 && errno != EAGAIN) {
+                    perror("read");
+                    return 1;
+                }
+
+                if(len <= 0)
+                    continue;
+
+                for(char *ptr = buf; ptr < buf + len; ptr += sizeof(struct inotify_event) + event->len) {
+                    event = (const struct inotify_event *) ptr;
+                    for(auto &dir : rpmdirs) {
+                        if(dir.inotifyWatch == event->wd) {
+                            auto path = dir.path + "/" + event->name;
+                            if(path.ends_with(".rpm")) {
+                                if(!vfs.addRPM(path))
+                                    fprintf(stderr, "Failed to add %s\n", path.c_str());
+                            }
+                            break;
+                        }
+                    }
+                }
+           }
+        }
+    }
+
     fuse_opt_free_args(&args);
-    return ret;
+    return 0;
 }

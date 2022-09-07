@@ -22,7 +22,9 @@ public:
     RepoVFS();
     ~RepoVFS();
     bool addRPM(const std::string &path);
-    bool mountAndLoop(fuse_args &args, const std::string &path);
+    bool mount(fuse_args &args, const std::string &path);
+    int fuseFD();
+    bool processFuseRequests();
 
 private:
     // Functions used by fuse_lowlevel_ops
@@ -51,5 +53,6 @@ private:
     /** FUSE stuff */
     struct FuseLLOps;
     static const FuseLLOps fuse_ll_ops;
+public:
     struct fuse_session *fuseSession = nullptr;
 };
