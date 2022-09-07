@@ -121,6 +121,8 @@ bool RepoVFS::addRPM(const std::string &path)
         if(rpmfiFFlags(fi) & RPMFILE_GHOST)
             continue;
 
+        // This does quite a bit of work for us already,
+        // even translating uid/gid with proper fallback.
         struct stat stat;
         if(rpmfiStat(fi, 0, &stat) != 0)
             return false;
@@ -132,6 +134,7 @@ bool RepoVFS::addRPM(const std::string &path)
         }
         fn++; // Skip the /
 
+        // Go through the path for each component
         auto *currentDirNode = dynamic_cast<DirNode*>(nodes[1].get());
         std::ranges::split_view components{std::string_view(fn), '/'};
         for(auto it = begin(components); it != end(components);) {
@@ -141,11 +144,14 @@ bool RepoVFS::addRPM(const std::string &path)
 
             auto thisNode = nodeByName(currentDirNode, component);
             if(it != end(components)) {
+                // Not the final component, traverse it.
+                // Create placeholder directory if necessary.
                 if(!thisNode) {
                     // Parent directory not found, create it
                     thisNode = makeDirNode(currentDirNode->stat.st_ino);
                     currentDirNode->children[std::string(component)] = thisNode->stat.st_ino;
                     currentDirNode = dynamic_cast<DirNode*>(thisNode);
+                    rpmlog(RPMLOG_NOTICE, "Created placeholder directory %s\n", );
                 } else if(auto dirNode = dynamic_cast<DirNode*>(thisNode)) {
                     // Parent directory exists, use it
                     currentDirNode = dirNode;
@@ -155,22 +161,6 @@ bool RepoVFS::addRPM(const std::string &path)
                     return false;
                 }
                 continue;
-            }
-
-            const char *fuser = rpmfiFUser(fi);
-            const char *fgroup = rpmfiFGroup(fi);
-
-            if(struct passwd *user = getpwnam(fuser); user) {
-                stat.st_uid = user->pw_uid;
-            } else {
-                rpmlog(RPMLOG_WARNING, "User %s not found for file %s, using root\n", fuser, fn);
-                stat.st_uid = 0;
-            }
-            if(auto *group = getgrnam(fgroup); group) {
-                stat.st_gid = group->gr_gid;
-            } else {
-                rpmlog(RPMLOG_WARNING, "Group %s not found for file %s, using root\n", fgroup, fn);
-                stat.st_gid = 0;
             }
 
             if(thisNode) {
@@ -184,7 +174,12 @@ bool RepoVFS::addRPM(const std::string &path)
                 if(dirNode->packageOwned) {
                     if(dirNode->stat.st_mode != stat.st_mode)
                         rpmlog(RPMLOG_WARNING, "Conflicting modes for dir %s\n", fn);
+                    if(dirNode->stat.st_uid != stat.st_uid
+                       || dirNode->stat.st_gid != stat.st_gid)
+                        rpmlog(RPMLOG_WARNING, "Conflicting owner for dir %s\n", fn);
+                    // TODO: Check other attributes?
                 } else {
+                    // Wasn't owned previously, take ownership.
                     stat.st_ino = dirNode->stat.st_ino;
                     dirNode->stat = stat;
                     dirNode->packageOwned = true;
