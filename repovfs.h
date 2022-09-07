@@ -35,7 +35,7 @@ private:
                        struct fuse_file_info *fi);
     static void releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi);
     static void read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
-                    struct fuse_file_info *fi);
+                    struct fuse_file_info *file_info);
 
 private:
     DirNode* makeDirNode(fuse_ino_t parent);

@@ -66,6 +66,8 @@ struct RepoVFS::DirNode : public RepoVFS::Node {
 
 struct RepoVFS::FileNode : public RepoVFS::Node {
     using Node::Node;
+
+    std::string pathOfPackage, pathInPackage;
 };
 
 struct RepoVFS::SymlinkNode : public RepoVFS::Node {
@@ -138,6 +140,7 @@ bool RepoVFS::addRPM(const std::string &path)
         rpmlog(RPMLOG_ERR, "%s: %d", path.c_str(), rc);
         return false;
     }
+    auto hdrfree = Defer([&] { headerFree(hdr); });
 
     // Iterate all files
     rpmfi fi = rpmfiNew(ts, hdr, RPMTAG_BASENAMES, RPMFI_NOHEADER | RPMFI_FLAGS_QUERY);
@@ -160,11 +163,11 @@ bool RepoVFS::addRPM(const std::string &path)
             rpmlog(RPMLOG_WARNING, "Filename %s is weird, ignoring\n", fn);
             continue;
         }
-        fn++; // Skip the /
 
         // Go through the path for each component
         auto *currentDirNode = dynamic_cast<DirNode*>(nodes[1].get());
-        std::ranges::split_view components{std::string_view(fn), '/'};
+        // +1 to skip the "/"
+        std::ranges::split_view components{std::string_view(fn + 1), '/'};
         for(auto it = begin(components); it != end(components);) {
             auto range = *it;
             std::string_view component(range.begin(), range.end());
@@ -219,7 +222,10 @@ bool RepoVFS::addRPM(const std::string &path)
             if(S_ISDIR(stat.st_mode)) {
                 nodes.push_back(std::make_unique<DirNode>(currentDirNode->stat.st_ino, stat));
             } else if(S_ISREG(stat.st_mode)) {
-                nodes.push_back(std::make_unique<FileNode>(currentDirNode->stat.st_ino, stat));
+                auto node = std::make_unique<FileNode>(currentDirNode->stat.st_ino, stat);
+                node->pathOfPackage = path;
+                node->pathInPackage = fn;
+                nodes.push_back(std::move(node));
             } else if(S_ISLNK(stat.st_mode)) {
                 auto target = rpmfiFLink(fi);
                 if(!target || target[0] == '/') {
@@ -391,9 +397,114 @@ void RepoVFS::releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     fuse_reply_err(req, 0);
 }
 
-void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_file_info *fi)
+void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_file_info *file_info)
 {
-    fuse_reply_err(req, EOPNOTSUPP);
+    RepoVFS *that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
+    auto node = that->nodeForIno(ino);
+    if(!node)
+    {
+        fuse_reply_err(req, EIO);
+        return;
+    }
+
+    auto fileNode = dynamic_cast<FileNode*>(node);
+    if(!fileNode)
+    {
+        fuse_reply_err(req, EINVAL);
+        return;
+    }
+
+    // Reading past the end
+    if(off >= off_t(fileNode->stat.st_size))
+        size = 0;
+    else
+        size = std::min(off_t(fileNode->stat.st_size) - off, off_t(size));
+
+    if(size == 0) {
+        fuse_reply_buf(req, "", 0);
+        return;
+    }
+
+    // Open the RPM file
+    auto f = Fopen(fileNode->pathOfPackage.c_str(), "r.ufdio");
+    if (Ferror(f)) {
+        rpmlog(RPMLOG_ERR, "%s: %s\n", fileNode->pathOfPackage.c_str(), Fstrerror(f));
+        fuse_reply_err(req, EIO);
+        return;
+    }
+    auto ffree = Defer([&] { Fclose(f); });
+
+    // Read the header
+    Header hdr;
+    if(int rc = rpmReadPackageFile(that->ts, f, fileNode->pathOfPackage.c_str(), &hdr); rc != RPMRC_OK) {
+        rpmlog(RPMLOG_ERR, "%s: %d", fileNode->pathOfPackage.c_str(), rc);
+        fuse_reply_err(req, EIO);
+        return;
+    }
+    auto hdrfree = Defer([&] { headerFree(hdr); });
+
+    const char *compr = headerGetString(hdr, RPMTAG_PAYLOADCOMPRESSOR);
+    if(!compr)
+        compr = "gzip";
+
+    f = Fdopen(f, (std::string("r.") + compr).c_str());
+    if(Ferror(f)) {
+        rpmlog(RPMLOG_ERR, "Failed to reopen %s: %s", fileNode->pathOfPackage.c_str(), Fstrerror(f));
+        fuse_reply_err(req, EIO);
+        return;
+    }
+
+    rpmfiles files = rpmfilesNew(NULL, hdr, 0, RPMFI_KEEPHEADER);
+    auto filesFree = Defer([&] { rpmfilesFree(files); });
+    rpmfi fi = rpmfiNewArchiveReader(f, files, RPMFI_ITER_READ_ARCHIVE_CONTENT_FIRST);
+    auto fiFree = Defer([&] { rpmfiFree(fi); });
+
+    int rc = rpmfiNext(fi);
+    for(; rc >= 0; rc = rpmfiNext(fi)) {
+        std::string_view path = rpmfiFN(fi);
+        if(path != fileNode->pathInPackage)
+            continue;
+
+        rpmlog(RPMLOG_NOTICE, "File %s found in %s\n", fileNode->pathInPackage.c_str(), fileNode->pathOfPackage.c_str());
+
+        if(!rpmfiArchiveHasContent(fi)) {
+            rpmlog(RPMLOG_ERR, "File %s is a hardlink, not supported yet\n", fileNode->pathInPackage.c_str());
+            fuse_reply_err(req, EIO);
+            return;
+        }
+
+        // Seek to the right offset
+        while(off > 0) {
+            char buf[1024];
+            size_t step = std::min(sizeof(buf), size_t(off));
+            auto skipped = rpmfiArchiveRead(fi, buf, step);
+            if(skipped < 0) {
+                fuse_reply_err(req, EIO);
+                return;
+            }
+
+            off -= skipped;
+        }
+
+        std::vector<char> buf;
+        buf.resize(size);
+        char *ptr = buf.data();
+        while(size > 0) {
+            auto sizeRead = rpmfiArchiveRead(fi, ptr, size);
+            if(sizeRead < 0) {
+                fuse_reply_err(req, EIO);
+                return;
+            }
+
+            size -= sizeRead;
+        }
+
+        fuse_reply_buf(req, buf.data(), buf.size());
+        return;
+    }
+
+    rpmlog(RPMLOG_ERR, "File %s not found in %s anymore\n", fileNode->pathInPackage.c_str(), fileNode->pathOfPackage.c_str());
+    fuse_reply_err(req, EIO);
 }
 
 RepoVFS::Node *RepoVFS::nodeByName(const DirNode *parentDir, const std::string_view &name)
