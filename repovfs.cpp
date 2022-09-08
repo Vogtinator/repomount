@@ -31,6 +31,7 @@ struct RepoVFS::FuseLLOps : public fuse_lowlevel_ops
         lookup = &RepoVFS::lookup;
         getattr = &RepoVFS::getattr;
         readlink = &RepoVFS::readlink;
+        open = &RepoVFS::open;
         read = &RepoVFS::read;
         opendir = &RepoVFS::opendir;
         readdir = &RepoVFS::readdir;
@@ -266,8 +267,8 @@ void RepoVFS::replyEntry(fuse_req_t req, RepoVFS::Node *node)
     if(node)
     {
         entry.ino = node->stat.st_ino;
-        entry.attr_timeout = 0.0;
-        entry.entry_timeout = 0.0;
+        entry.attr_timeout = 60*60;
+        entry.entry_timeout = 60*60;
         entry.attr = node->stat;
     }
 
@@ -365,6 +366,7 @@ void RepoVFS::opendir(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
     }
 
     fi->fh = reinterpret_cast<uint64_t>(dirbuf.release());
+    fi->cache_readdir = true;
     fuse_reply_open(req, fi);
 }
 
@@ -389,6 +391,13 @@ void RepoVFS::releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
     (void) ino;
     delete reinterpret_cast<std::vector<char>*>(fi->fh);
     fuse_reply_err(req, 0);
+}
+
+void RepoVFS::open(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
+{
+    (void) ino;
+    fi->keep_cache = true;
+    fuse_reply_open(req, fi);
 }
 
 void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_file_info *file_info)

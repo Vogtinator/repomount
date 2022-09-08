@@ -34,6 +34,7 @@ private:
     static void readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
                        struct fuse_file_info *fi);
     static void releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi);
+    static void open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi);
     static void read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
                     struct fuse_file_info *file_info);
 
