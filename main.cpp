@@ -44,11 +44,11 @@ int main(int argc, char* argv[])
     if (fuse_parse_cmdline(&args, &opts) != 0)
         return 1;
 
-    if (opts.show_help) {
+    if (opts.show_help || !opts.mountpoint || rmOpts.rpms.empty()) {
         printf("Usage: %s [options] <mountpoint> <rpm file>...\n\n", argv[0]);
         fuse_cmdline_help();
         fuse_lowlevel_help();
-        return 0;
+        return opts.show_help ? 0 : 1;
     } else if (opts.show_version) {
         printf("RepoMount version 0.1\n");
         printf("FUSE library version %s\n", fuse_pkgversion());
