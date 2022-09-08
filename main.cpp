@@ -4,8 +4,9 @@
    SPDX-License-Identifier: GPL-3.0-or-later
 */
 
-#include <string>
 #include <dirent.h>
+
+#include <string>
 
 #include "repovfs.h"
 
@@ -17,15 +18,15 @@ struct repomount_opts {
     std::vector<std::string> rpms;
 };
 
-int processOption(void *data, const char *arg, int key, struct fuse_args *outargs)
+int processOption(void* data, const char* arg, int key, struct fuse_args* outargs)
 {
     (void)outargs;
-    if(key != FUSE_OPT_KEY_NONOPT)
+    if (key != FUSE_OPT_KEY_NONOPT)
         return 1;
 
-    auto *opts = static_cast<repomount_opts*>(data);
+    auto* opts = static_cast<repomount_opts*>(data);
     // Skip the mountpoint
-    if(!opts->mountpoint_seen) {
+    if (!opts->mountpoint_seen) {
         opts->mountpoint_seen = true;
         return 1;
     }
@@ -34,7 +35,7 @@ int processOption(void *data, const char *arg, int key, struct fuse_args *outarg
     return 0;
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     struct fuse_cmdline_opts opts;
@@ -43,15 +44,12 @@ int main(int argc, char *argv[])
     if (fuse_parse_cmdline(&args, &opts) != 0)
         return 1;
 
-    if (opts.show_help)
-    {
+    if (opts.show_help) {
         printf("Usage: %s [options] <mountpoint> <rpm file>...\n\n", argv[0]);
         fuse_cmdline_help();
         fuse_lowlevel_help();
         return 0;
-    }
-    else if (opts.show_version)
-    {
+    } else if (opts.show_version) {
         printf("RepoMount version 0.1\n");
         printf("FUSE library version %s\n", fuse_pkgversion());
         fuse_lowlevel_version();
@@ -61,23 +59,23 @@ int main(int argc, char *argv[])
     RepoVFS vfs;
 
     // Add all given RPMs to the VFS
-    for(auto &rpm : rmOpts.rpms) {
+    for (auto& rpm : rmOpts.rpms) {
         struct stat s;
-        if(stat(rpm.c_str(), &s) != 0) {
+        if (stat(rpm.c_str(), &s) != 0) {
             fprintf(stderr, "Failed to open %s: %s\n", rpm.c_str(), strerror(errno));
             return 1;
         }
 
         // If the given path is a directory, add all .rpm files
-        if(S_ISDIR(s.st_mode)) {
-            DIR *d = opendir(rpm.c_str());
-            if(!d) {
+        if (S_ISDIR(s.st_mode)) {
+            DIR* d = opendir(rpm.c_str());
+            if (!d) {
                 fprintf(stderr, "Failed to open %s: %s\n", rpm.c_str(), strerror(errno));
                 return 1;
             }
-            for(auto *entry = readdir(d); entry; entry = readdir(d)) {
-                if(std::string_view(entry->d_name).ends_with(".rpm")) {
-                    if(!vfs.addRPM(rpm + "/" + entry->d_name)) {
+            for (auto* entry = readdir(d); entry; entry = readdir(d)) {
+                if (std::string_view(entry->d_name).ends_with(".rpm")) {
+                    if (!vfs.addRPM(rpm + "/" + entry->d_name)) {
                         fprintf(stderr, "Failed to add %s\n", entry->d_name);
                         return 1;
                     }
@@ -85,7 +83,7 @@ int main(int argc, char *argv[])
             }
             closedir(d);
         } else {
-            if(!vfs.addRPM(rpm)) {
+            if (!vfs.addRPM(rpm)) {
                 fprintf(stderr, "Failed to add %s\n", rpm.c_str());
                 return 1;
             }

@@ -4,28 +4,28 @@
    SPDX-License-Identifier: GPL-3.0-or-later
 */
 
+#include "repovfs.h"
+
 #include <fuse_lowlevel.h>
-#include <string>
-#include <map>
-#include <ranges>
-#include <sys/stat.h>
+#include <grp.h>
+#include <pwd.h>
 #include <rpm/rpmlib.h>
 #include <rpm/rpmlog.h>
+#include <sys/stat.h>
 #include <sys/types.h>
-#include <pwd.h>
-#include <grp.h>
 
-#include "repovfs.h"
+#include <map>
+#include <ranges>
+#include <string>
 
 // RAII helper for C types
 template <typename T> struct Defer {
-    explicit Defer(T t) : t(t) {}
+    explicit Defer(T t) : t(t) { }
     ~Defer() { t(); }
     T t;
 };
 
-struct RepoVFS::FuseLLOps : public fuse_lowlevel_ops
-{
+struct RepoVFS::FuseLLOps : public fuse_lowlevel_ops {
     FuseLLOps()
     {
         lookup = &RepoVFS::lookup;
@@ -43,12 +43,9 @@ const struct RepoVFS::FuseLLOps RepoVFS::fuse_ll_ops;
 
 struct RepoVFS::Node {
     // Creates a new node. Make sure to set the node's stat.st_ino once inserted.
-    Node(fuse_ino_t parentIno, const struct stat &stat) :
-        parentIno(parentIno),
-        stat(stat)
-    {}
+    Node(fuse_ino_t parentIno, const struct stat& stat) : parentIno(parentIno), stat(stat) { }
 
-    virtual ~Node() {}
+    virtual ~Node() { }
 
     // In the case of hardlinked files this might not be the entire truth.
     fuse_ino_t parentIno;
@@ -77,7 +74,8 @@ struct RepoVFS::SymlinkNode : public RepoVFS::Node {
     std::string target;
 };
 
-RepoVFS::DirNode* RepoVFS::makeDirNode(fuse_ino_t parent) {
+RepoVFS::DirNode* RepoVFS::makeDirNode(fuse_ino_t parent)
+{
     struct stat attr = {
         .st_ino = nodes.size(),
         .st_nlink = 1,
@@ -98,10 +96,12 @@ RepoVFS::DirNode* RepoVFS::makeDirNode(fuse_ino_t parent) {
     return ret;
 }
 
-RepoVFS::Node *RepoVFS::nodeForIno(fuse_ino_t ino)
+// clang-format off
+RepoVFS::Node* RepoVFS::nodeForIno(fuse_ino_t ino)
 {
     return ino >= nodes.size() ? nullptr : nodes[ino].get();
 }
+// clang-format on
 
 RepoVFS::RepoVFS()
 {
@@ -117,7 +117,7 @@ RepoVFS::RepoVFS()
 
 RepoVFS::~RepoVFS()
 {
-    if(fuseSession) {
+    if (fuseSession) {
         fuse_session_unmount(fuseSession);
         fuse_session_destroy(fuseSession);
         fuseSession = nullptr;
@@ -126,7 +126,7 @@ RepoVFS::~RepoVFS()
     rpmtsFree(ts);
 }
 
-bool RepoVFS::addRPM(const std::string &path)
+bool RepoVFS::addRPM(const std::string& path)
 {
     // Open the RPM file
     auto f = Fopen(path.c_str(), "r.ufdio");
@@ -138,7 +138,7 @@ bool RepoVFS::addRPM(const std::string &path)
 
     // Read the header
     Header hdr;
-    if(int rc = rpmReadPackageFile(ts, f, path.c_str(), &hdr); rc != RPMRC_OK) {
+    if (int rc = rpmReadPackageFile(ts, f, path.c_str(), &hdr); rc != RPMRC_OK) {
         rpmlog(RPMLOG_ERR, "%s: %d\n", path.c_str(), rc);
         return false;
     }
@@ -151,35 +151,36 @@ bool RepoVFS::addRPM(const std::string &path)
     fi = rpmfiInit(fi, 0);
     while (rpmfiNext(fi) >= 0) {
         // Ignore %ghost files
-        if(rpmfiFFlags(fi) & RPMFILE_GHOST)
+        if (rpmfiFFlags(fi) & RPMFILE_GHOST)
             continue;
 
         // This does quite a bit of work for us already,
         // even translating uid/gid with proper fallback.
         struct stat stat;
-        if(rpmfiStat(fi, 0, &stat) != 0)
+        if (rpmfiStat(fi, 0, &stat) != 0)
             return false;
 
         // fn="/usr/libexec/convertfs"
-        const char *fn = rpmfiFN(fi);
+        const char* fn = rpmfiFN(fi);
         // dn="/usr/libexec/" bn="convertfs"
         const char *dn = rpmfiDN(fi), *bn = rpmfiBN(fi);
 
         // Traverse into the target directory
-        auto *currentDirNode = dynamic_cast<DirNode*>(nodes[1].get());
-        for(auto pathPart : std::ranges::split_view{std::string_view(dn), '/'}) {
+        auto* currentDirNode = dynamic_cast<DirNode*>(nodes[1].get());
+        for (auto pathPart : std::ranges::split_view { std::string_view(dn), '/' }) {
             std::string_view component(pathPart.begin(), pathPart.end());
-            // Skip empty components, such as the beginning and end of "/usr/libexec/"
-            if(component.empty())
+            // Skip empty components, such as the beginning and end of
+            // "/usr/libexec/"
+            if (component.empty())
                 continue;
 
             auto thisNode = nodeByName(currentDirNode, component);
-            if(!thisNode) {
+            if (!thisNode) {
                 // Directory not found, create a placeholder
                 thisNode = makeDirNode(currentDirNode->stat.st_ino);
                 currentDirNode->children[std::string(component)] = thisNode->stat.st_ino;
                 currentDirNode = dynamic_cast<DirNode*>(thisNode);
-            } else if(auto dirNode = dynamic_cast<DirNode*>(thisNode)) {
+            } else if (auto dirNode = dynamic_cast<DirNode*>(thisNode)) {
                 // Directory exists, use it
                 currentDirNode = dirNode;
             } else {
@@ -191,20 +192,19 @@ bool RepoVFS::addRPM(const std::string &path)
 
         // Target directory reached, check whether the node exists already
         auto thisNode = nodeByName(currentDirNode, bn);
-        if(thisNode) {
+        if (thisNode) {
             // Node already exists, only allowed for directories
-            if(!S_ISDIR(stat.st_mode) || !S_ISDIR(thisNode->stat.st_mode)) {
+            if (!S_ISDIR(stat.st_mode) || !S_ISDIR(thisNode->stat.st_mode)) {
                 rpmlog(RPMLOG_ERR, "%s has type mismatch\n", fn);
                 return false;
             }
 
             auto dirNode = dynamic_cast<DirNode*>(thisNode);
-            if(dirNode->packageOwned) {
+            if (dirNode->packageOwned) {
                 // Already owned, check for conflicts
-                if(dirNode->stat.st_mode != stat.st_mode)
+                if (dirNode->stat.st_mode != stat.st_mode)
                     rpmlog(RPMLOG_WARNING, "Conflicting modes for dir %s\n", fn);
-                if(dirNode->stat.st_uid != stat.st_uid
-                   || dirNode->stat.st_gid != stat.st_gid)
+                if (dirNode->stat.st_uid != stat.st_uid || dirNode->stat.st_gid != stat.st_gid)
                     rpmlog(RPMLOG_WARNING, "Conflicting owner for dir %s\n", fn);
                 // TODO: Check other attributes?
             } else {
@@ -218,16 +218,16 @@ bool RepoVFS::addRPM(const std::string &path)
 
         // Node doesn't exist yet, create it
         stat.st_ino = nodes.size();
-        if(S_ISDIR(stat.st_mode)) {
+        if (S_ISDIR(stat.st_mode)) {
             nodes.push_back(std::make_unique<DirNode>(currentDirNode->stat.st_ino, stat));
-        } else if(S_ISREG(stat.st_mode)) {
+        } else if (S_ISREG(stat.st_mode)) {
             auto node = std::make_unique<FileNode>(currentDirNode->stat.st_ino, stat);
             node->pathOfPackage = path;
             node->pathInPackage = fn;
             nodes.push_back(std::move(node));
-        } else if(S_ISLNK(stat.st_mode)) {
+        } else if (S_ISLNK(stat.st_mode)) {
             auto target = rpmfiFLink(fi);
-            if(!target || target[0] == '/') {
+            if (!target || target[0] == '/') {
                 rpmlog(RPMLOG_WARNING, "Symlink %s -> %s unhandled\n", fn, target);
                 continue;
             }
@@ -245,13 +245,13 @@ bool RepoVFS::addRPM(const std::string &path)
     return true;
 }
 
-bool RepoVFS::mountAndLoop(struct fuse_args &args, const std::string &path)
+bool RepoVFS::mountAndLoop(struct fuse_args& args, const std::string& path)
 {
     fuseSession = fuse_session_new(&args, &fuse_ll_ops, sizeof(fuse_ll_ops), this);
-    if(!fuseSession)
+    if (!fuseSession)
         return false;
 
-    if(fuse_session_mount(fuseSession, path.c_str()) != 0)
+    if (fuse_session_mount(fuseSession, path.c_str()) != 0)
         return false;
 
     fuse_set_signal_handlers(fuseSession);
@@ -260,35 +260,33 @@ bool RepoVFS::mountAndLoop(struct fuse_args &args, const std::string &path)
     return fuse_session_loop(fuseSession) >= 0;
 }
 
-void RepoVFS::replyEntry(fuse_req_t req, RepoVFS::Node *node)
+void RepoVFS::replyEntry(fuse_req_t req, RepoVFS::Node* node)
 {
-    // Zero means invalid entry. Compared to an ENOENT reply, the kernel can cache this.
-    struct fuse_entry_param entry {};
+    // Zero means invalid entry. Compared to an ENOENT reply, the kernel can
+    // cache this.
+    struct fuse_entry_param entry { };
 
-    if(node)
-    {
+    if (node) {
         entry.ino = node->stat.st_ino;
-        entry.attr_timeout = 60*60;
-        entry.entry_timeout = 60*60;
+        entry.attr_timeout = 60 * 60;
+        entry.entry_timeout = 60 * 60;
         entry.attr = node->stat;
     }
 
     fuse_reply_entry(req, &entry);
 }
 
-void RepoVFS::lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
+void RepoVFS::lookup(fuse_req_t req, fuse_ino_t parent, const char* name)
 {
-    RepoVFS *that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
+    RepoVFS* that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
     auto parentNode = that->nodeForIno(parent);
-    if(!parentNode)
-    {
+    if (!parentNode) {
         fuse_reply_err(req, EIO);
         return;
     }
 
     auto parentDirNode = dynamic_cast<DirNode*>(parentNode);
-    if(!parentDirNode)
-    {
+    if (!parentDirNode) {
         fuse_reply_err(req, ENOTDIR);
         return;
     }
@@ -296,13 +294,12 @@ void RepoVFS::lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
     that->replyEntry(req, that->nodeByName(parentDirNode, name));
 }
 
-void RepoVFS::getattr(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
+void RepoVFS::getattr(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi)
 {
-    (void) fi;
-    RepoVFS *that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
+    (void)fi;
+    RepoVFS* that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
     auto node = that->nodeForIno(ino);
-    if(!node)
-    {
+    if (!node) {
         fuse_reply_err(req, EIO);
         return;
     }
@@ -312,17 +309,15 @@ void RepoVFS::getattr(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
 
 void RepoVFS::readlink(fuse_req_t req, fuse_ino_t ino)
 {
-    RepoVFS *that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
+    RepoVFS* that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
     auto node = that->nodeForIno(ino);
-    if(!node)
-    {
+    if (!node) {
         fuse_reply_err(req, EIO);
         return;
     }
 
     auto symlinkNode = dynamic_cast<SymlinkNode*>(node);
-    if(!symlinkNode)
-    {
+    if (!symlinkNode) {
         fuse_reply_err(req, EINVAL);
         return;
     }
@@ -330,26 +325,24 @@ void RepoVFS::readlink(fuse_req_t req, fuse_ino_t ino)
     fuse_reply_readlink(req, symlinkNode->target.c_str());
 }
 
-static void appendDirentry(std::vector<char> &dirbuf, fuse_req_t req, const char *name, const struct stat *stbuf)
+static void appendDirentry(std::vector<char>& dirbuf, fuse_req_t req, const char* name, const struct stat* stbuf)
 {
     size_t oldsize = dirbuf.size();
     dirbuf.resize(oldsize + fuse_add_direntry(req, nullptr, 0, name, nullptr, 0));
     fuse_add_direntry(req, dirbuf.data() + oldsize, dirbuf.size() + oldsize, name, stbuf, dirbuf.size());
 }
 
-void RepoVFS::opendir(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
+void RepoVFS::opendir(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi)
 {
-    RepoVFS *that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
+    RepoVFS* that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
     auto node = that->nodeForIno(ino);
-    if(!node)
-    {
+    if (!node) {
         fuse_reply_err(req, EIO);
         return;
     }
 
     auto dirNode = dynamic_cast<DirNode*>(node);
-    if(!dirNode)
-    {
+    if (!dirNode) {
         fuse_reply_err(req, ENOTDIR);
         return;
     }
@@ -360,11 +353,10 @@ void RepoVFS::opendir(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
     auto dirbuf = std::make_unique<std::vector<char>>();
     appendDirentry(*dirbuf, req, ".", &node->stat);
 
-    if(Node* parentNode = that->nodeForIno(node->parentIno); parentNode)
+    if (Node* parentNode = that->nodeForIno(node->parentIno); parentNode)
         appendDirentry(*dirbuf, req, "..", &parentNode->stat);
 
-    for(auto ino : dirNode->children)
-    {
+    for (auto ino : dirNode->children) {
         auto child = that->nodeForIno(ino.second);
         appendDirentry(*dirbuf, req, ino.first.c_str(), &child->stat);
     }
@@ -374,61 +366,58 @@ void RepoVFS::opendir(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
     fuse_reply_open(req, fi);
 }
 
-void RepoVFS::readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi)
+void RepoVFS::readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info* fi)
 {
-    (void) ino;
+    (void)ino;
     std::vector<char>* dirbuf = reinterpret_cast<std::vector<char>*>(fi->fh);
-    if(!dirbuf)
-    {
+    if (!dirbuf) {
         fuse_reply_err(req, EIO);
         return;
     }
 
-    if(off < off_t(dirbuf->size()))
+    if (off < off_t(dirbuf->size()))
         fuse_reply_buf(req, dirbuf->data() + off, std::min(off_t(size), off_t(dirbuf->size()) - off));
     else
         fuse_reply_buf(req, nullptr, 0);
 }
 
-void RepoVFS::releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+void RepoVFS::releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi)
 {
-    (void) ino;
+    (void)ino;
     delete reinterpret_cast<std::vector<char>*>(fi->fh);
     fuse_reply_err(req, 0);
 }
 
-void RepoVFS::open(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
+void RepoVFS::open(fuse_req_t req, fuse_ino_t ino, fuse_file_info* fi)
 {
-    (void) ino;
+    (void)ino;
     fi->keep_cache = true;
     fuse_reply_open(req, fi);
 }
 
-void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_file_info *file_info)
+void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_file_info* file_info)
 {
-    (void) file_info;
-    RepoVFS *that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
+    (void)file_info;
+    RepoVFS* that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
     auto node = that->nodeForIno(ino);
-    if(!node)
-    {
+    if (!node) {
         fuse_reply_err(req, EIO);
         return;
     }
 
     auto fileNode = dynamic_cast<FileNode*>(node);
-    if(!fileNode)
-    {
+    if (!fileNode) {
         fuse_reply_err(req, EINVAL);
         return;
     }
 
     // Reading past the end
-    if(off >= off_t(fileNode->stat.st_size))
+    if (off >= off_t(fileNode->stat.st_size))
         size = 0;
     else
         size = std::min(off_t(fileNode->stat.st_size) - off, off_t(size));
 
-    if(size == 0) {
+    if (size == 0) {
         fuse_reply_buf(req, "", 0);
         return;
     }
@@ -444,20 +433,20 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
 
     // Read the header
     Header hdr;
-    if(int rc = rpmReadPackageFile(that->ts, f, fileNode->pathOfPackage.c_str(), &hdr); rc != RPMRC_OK) {
+    if (int rc = rpmReadPackageFile(that->ts, f, fileNode->pathOfPackage.c_str(), &hdr); rc != RPMRC_OK) {
         rpmlog(RPMLOG_ERR, "%s: %d", fileNode->pathOfPackage.c_str(), rc);
         fuse_reply_err(req, EIO);
         return;
     }
     auto hdrfree = Defer([&] { headerFree(hdr); });
 
-    const char *compr = headerGetString(hdr, RPMTAG_PAYLOADCOMPRESSOR);
-    if(!compr)
+    const char* compr = headerGetString(hdr, RPMTAG_PAYLOADCOMPRESSOR);
+    if (!compr)
         compr = "gzip";
 
     // Open the payload
     f = Fdopen(f, (std::string("r.") + compr).c_str());
-    if(Ferror(f)) {
+    if (Ferror(f)) {
         rpmlog(RPMLOG_ERR, "Failed to reopen %s: %s", fileNode->pathOfPackage.c_str(), Fstrerror(f));
         fuse_reply_err(req, EIO);
         return;
@@ -470,22 +459,22 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
 
     // Iterate all files inside until the right one is found
     int rc = rpmfiNext(fi);
-    for(; rc >= 0; rc = rpmfiNext(fi)) {
-        if(fileNode->pathInPackage != std::string_view(rpmfiFN(fi)))
+    for (; rc >= 0; rc = rpmfiNext(fi)) {
+        if (fileNode->pathInPackage != std::string_view(rpmfiFN(fi)))
             continue;
 
-        if(!rpmfiArchiveHasContent(fi)) {
+        if (!rpmfiArchiveHasContent(fi)) {
             rpmlog(RPMLOG_ERR, "File %s is a hardlink, not supported yet\n", fileNode->pathInPackage.c_str());
             fuse_reply_err(req, EIO);
             return;
         }
 
         // Seek to the right offset
-        while(off > 0) {
+        while (off > 0) {
             char buf[1024];
             size_t step = std::min(sizeof(buf), size_t(off));
             auto skipped = rpmfiArchiveRead(fi, buf, step);
-            if(skipped <= 0) {
+            if (skipped <= 0) {
                 fuse_reply_err(req, EIO);
                 return;
             }
@@ -496,10 +485,10 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
         // Read (exactly) the specified size
         std::vector<char> buf;
         buf.resize(size);
-        char *ptr = buf.data();
-        while(size > 0) {
+        char* ptr = buf.data();
+        while (size > 0) {
             auto sizeRead = rpmfiArchiveRead(fi, ptr, size);
-            if(sizeRead <= 0) {
+            if (sizeRead <= 0) {
                 fuse_reply_err(req, EIO);
                 return;
             }
@@ -511,29 +500,30 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
         return;
     }
 
-    rpmlog(RPMLOG_ERR, "File %s not found in %s anymore\n", fileNode->pathInPackage.c_str(), fileNode->pathOfPackage.c_str());
+    rpmlog(RPMLOG_ERR, "File %s not found in %s anymore\n", fileNode->pathInPackage.c_str(),
+        fileNode->pathOfPackage.c_str());
     fuse_reply_err(req, EIO);
 }
 
-RepoVFS::Node *RepoVFS::nodeByName(const DirNode *parentDir, const std::string_view &name)
+RepoVFS::Node* RepoVFS::nodeByName(const DirNode* parentDir, const std::string_view& name)
 {
-    if(auto it = parentDir->children.find(name); it != parentDir->children.end())
+    if (auto it = parentDir->children.find(name); it != parentDir->children.end())
         return nodes[it->second].get();
 
     return nullptr;
 }
 
-void RepoVFS::dumpTree(const DirNode *node, int level)
+void RepoVFS::dumpTree(const DirNode* node, int level)
 {
-    for(auto child : node->children) {
-        for(int i = 0; i < level; ++i)
+    for (auto child : node->children) {
+        for (int i = 0; i < level; ++i)
             rpmlog(RPMLOG_NOTICE, "\t");
 
         auto childNode = nodes[child.second].get();
-        if(auto dirChild = dynamic_cast<DirNode*>(childNode)) {
+        if (auto dirChild = dynamic_cast<DirNode*>(childNode)) {
             rpmlog(RPMLOG_NOTICE, "%s\n", child.first.c_str());
             dumpTree(dirChild, level + 1);
-        } else if(auto symlinkChild = dynamic_cast<SymlinkNode*>(childNode)) {
+        } else if (auto symlinkChild = dynamic_cast<SymlinkNode*>(childNode)) {
             rpmlog(RPMLOG_NOTICE, "%s -> %s\n", child.first.c_str(), symlinkChild->target.c_str());
         } else {
             rpmlog(RPMLOG_NOTICE, "%s\n", child.first.c_str());
