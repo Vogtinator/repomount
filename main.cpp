@@ -18,13 +18,13 @@ struct repomount_opts {
     std::vector<std::string> rpms;
 };
 
-int processOption(void* data, const char* arg, int key, struct fuse_args* outargs)
+int processOption(void *data, const char *arg, int key, struct fuse_args *outargs)
 {
     (void)outargs;
     if (key != FUSE_OPT_KEY_NONOPT)
         return 1;
 
-    auto* opts = static_cast<repomount_opts*>(data);
+    auto *opts = static_cast<repomount_opts *>(data);
     // Skip the mountpoint
     if (!opts->mountpoint_seen) {
         opts->mountpoint_seen = true;
@@ -35,7 +35,7 @@ int processOption(void* data, const char* arg, int key, struct fuse_args* outarg
     return 0;
 }
 
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     struct fuse_cmdline_opts opts;
@@ -59,7 +59,7 @@ int main(int argc, char* argv[])
     RepoVFS vfs;
 
     // Add all given RPMs to the VFS
-    for (auto& rpm : rmOpts.rpms) {
+    for (auto &rpm : rmOpts.rpms) {
         struct stat s;
         if (stat(rpm.c_str(), &s) != 0) {
             fprintf(stderr, "Failed to open %s: %s\n", rpm.c_str(), strerror(errno));
@@ -68,12 +68,12 @@ int main(int argc, char* argv[])
 
         // If the given path is a directory, add all .rpm files
         if (S_ISDIR(s.st_mode)) {
-            DIR* d = opendir(rpm.c_str());
+            DIR *d = opendir(rpm.c_str());
             if (!d) {
                 fprintf(stderr, "Failed to open %s: %s\n", rpm.c_str(), strerror(errno));
                 return 1;
             }
-            for (auto* entry = readdir(d); entry; entry = readdir(d)) {
+            for (auto *entry = readdir(d); entry; entry = readdir(d)) {
                 if (std::string_view(entry->d_name).ends_with(".rpm")) {
                     if (!vfs.addRPM(rpm + "/" + entry->d_name)) {
                         fprintf(stderr, "Failed to add %s\n", entry->d_name);

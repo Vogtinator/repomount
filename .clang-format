@@ -1,3 +1,4 @@
 BasedOnStyle: WebKit
 ColumnLimit: 120
 BreakConstructorInitializers: BeforeColon
+PointerAlignment: Right

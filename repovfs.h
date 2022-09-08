@@ -7,13 +7,12 @@
 #pragma once
 
 #include <fuse_lowlevel.h>
-#include <rpm/rpmts.h>
 #include <memory>
-#include <vector>
+#include <rpm/rpmts.h>
 #include <string_view>
+#include <vector>
 
-class RepoVFS
-{
+class RepoVFS {
     struct Node;
     struct DirNode;
     struct FileNode;
@@ -31,15 +30,13 @@ private:
     static void getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi);
     static void readlink(fuse_req_t req, fuse_ino_t ino);
     static void open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi);
-    static void read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
-                    struct fuse_file_info *file_info);
+    static void read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *file_info);
     static void opendir(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi);
-    static void readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
-                       struct fuse_file_info *fi);
+    static void readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi);
     static void releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi);
 
 private:
-    DirNode* makeDirNode(fuse_ino_t parent);
+    DirNode *makeDirNode(fuse_ino_t parent);
     Node *nodeForIno(fuse_ino_t ino);
     Node *nodeByName(const DirNode *parent, const std::string_view &name);
     [[maybe_unused]] void dumpTree(const DirNode *node, int level = 0);
