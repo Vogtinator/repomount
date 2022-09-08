@@ -158,90 +158,86 @@ bool RepoVFS::addRPM(const std::string &path)
         if(rpmfiStat(fi, 0, &stat) != 0)
             return false;
 
+        // fn="/usr/libexec/convertfs"
         const char *fn = rpmfiFN(fi);
-        if(!fn || fn[0] != '/') {
-            rpmlog(RPMLOG_WARNING, "Filename %s is weird, ignoring\n", fn);
+        // dn="/usr/libexec/" bn="convertfs"
+        const char *dn = rpmfiDN(fi), *bn = rpmfiBN(fi);
+
+        // Traverse into the target directory
+        auto *currentDirNode = dynamic_cast<DirNode*>(nodes[1].get());
+        for(auto pathPart : std::ranges::split_view{std::string_view(dn), '/'}) {
+            std::string_view component(pathPart.begin(), pathPart.end());
+            // Skip empty components, such as the beginning and end of "/usr/libexec/"
+            if(component.empty())
+                continue;
+
+            auto thisNode = nodeByName(currentDirNode, component);
+            if(!thisNode) {
+                // Directory not found, create a placeholder
+                thisNode = makeDirNode(currentDirNode->stat.st_ino);
+                currentDirNode->children[std::string(component)] = thisNode->stat.st_ino;
+                currentDirNode = dynamic_cast<DirNode*>(thisNode);
+            } else if(auto dirNode = dynamic_cast<DirNode*>(thisNode)) {
+                // Directory exists, use it
+                currentDirNode = dirNode;
+            } else {
+                // Node exists, but isn't a directory
+                rpmlog(RPMLOG_ERR, "Component %s of %s not a directory\n", std::string(component).c_str(), fn);
+                return false;
+            }
+        }
+
+        // Target directory reached, check whether the node exists already
+        auto thisNode = nodeByName(currentDirNode, bn);
+        if(thisNode) {
+            // Node already exists, only allowed for directories
+            if(!S_ISDIR(stat.st_mode) || !S_ISDIR(thisNode->stat.st_mode)) {
+                rpmlog(RPMLOG_ERR, "%s has type mismatch\n", fn);
+                return false;
+            }
+
+            auto dirNode = dynamic_cast<DirNode*>(thisNode);
+            if(dirNode->packageOwned) {
+                // Already owned, check for conflicts
+                if(dirNode->stat.st_mode != stat.st_mode)
+                    rpmlog(RPMLOG_WARNING, "Conflicting modes for dir %s\n", fn);
+                if(dirNode->stat.st_uid != stat.st_uid
+                   || dirNode->stat.st_gid != stat.st_gid)
+                    rpmlog(RPMLOG_WARNING, "Conflicting owner for dir %s\n", fn);
+                // TODO: Check other attributes?
+            } else {
+                // Wasn't owned previously, take ownership.
+                stat.st_ino = dirNode->stat.st_ino;
+                dirNode->stat = stat;
+                dirNode->packageOwned = true;
+            }
             continue;
         }
 
-        // Go through the path for each component
-        auto *currentDirNode = dynamic_cast<DirNode*>(nodes[1].get());
-        // +1 to skip the "/"
-        std::ranges::split_view components{std::string_view(fn + 1), '/'};
-        for(auto it = begin(components); it != end(components);) {
-            auto range = *it;
-            std::string_view component(range.begin(), range.end());
-            ++it;
-
-            auto thisNode = nodeByName(currentDirNode, component);
-            if(it != end(components)) {
-                // Not the final component, traverse it.
-                // Create placeholder directory if necessary.
-                if(!thisNode) {
-                    // Parent directory not found, create it
-                    thisNode = makeDirNode(currentDirNode->stat.st_ino);
-                    currentDirNode->children[std::string(component)] = thisNode->stat.st_ino;
-                    currentDirNode = dynamic_cast<DirNode*>(thisNode);
-                } else if(auto dirNode = dynamic_cast<DirNode*>(thisNode)) {
-                    // Parent directory exists, use it
-                    currentDirNode = dirNode;
-                } else {
-                    // Node exists, but isn't a directory
-                    rpmlog(RPMLOG_ERR, "Component %s of %s not a directory\n", std::string(component).c_str(), fn);
-                    return false;
-                }
+        // Node doesn't exist yet, create it
+        stat.st_ino = nodes.size();
+        if(S_ISDIR(stat.st_mode)) {
+            nodes.push_back(std::make_unique<DirNode>(currentDirNode->stat.st_ino, stat));
+        } else if(S_ISREG(stat.st_mode)) {
+            auto node = std::make_unique<FileNode>(currentDirNode->stat.st_ino, stat);
+            node->pathOfPackage = path;
+            node->pathInPackage = fn;
+            nodes.push_back(std::move(node));
+        } else if(S_ISLNK(stat.st_mode)) {
+            auto target = rpmfiFLink(fi);
+            if(!target || target[0] == '/') {
+                rpmlog(RPMLOG_WARNING, "Symlink %s -> %s unhandled\n", fn, target);
                 continue;
             }
 
-            if(thisNode) {
-                // Node already exists, only allowed for directories
-                if(!S_ISDIR(stat.st_mode) || !S_ISDIR(thisNode->stat.st_mode)) {
-                    rpmlog(RPMLOG_ERR, "%s has type mismatch\n", fn);
-                    return false;
-                }
-
-                auto dirNode = dynamic_cast<DirNode*>(thisNode);
-                if(dirNode->packageOwned) {
-                    if(dirNode->stat.st_mode != stat.st_mode)
-                        rpmlog(RPMLOG_WARNING, "Conflicting modes for dir %s\n", fn);
-                    if(dirNode->stat.st_uid != stat.st_uid
-                       || dirNode->stat.st_gid != stat.st_gid)
-                        rpmlog(RPMLOG_WARNING, "Conflicting owner for dir %s\n", fn);
-                    // TODO: Check other attributes?
-                } else {
-                    // Wasn't owned previously, take ownership.
-                    stat.st_ino = dirNode->stat.st_ino;
-                    dirNode->stat = stat;
-                    dirNode->packageOwned = true;
-                }
-                continue;
-            }
-
-            // Node doesn't exist yet, create it
-            stat.st_ino = nodes.size();
-            if(S_ISDIR(stat.st_mode)) {
-                nodes.push_back(std::make_unique<DirNode>(currentDirNode->stat.st_ino, stat));
-            } else if(S_ISREG(stat.st_mode)) {
-                auto node = std::make_unique<FileNode>(currentDirNode->stat.st_ino, stat);
-                node->pathOfPackage = path;
-                node->pathInPackage = fn;
-                nodes.push_back(std::move(node));
-            } else if(S_ISLNK(stat.st_mode)) {
-                auto target = rpmfiFLink(fi);
-                if(!target || target[0] == '/') {
-                    rpmlog(RPMLOG_WARNING, "Symlink %s -> %s unhandled\n", fn, target);
-                    continue;
-                }
-
-                auto node = std::make_unique<SymlinkNode>(currentDirNode->stat.st_ino, stat);
-                node->target = target;
-                nodes.push_back(std::move(node));
-            } else {
-                rpmlog(RPMLOG_WARNING, "Mode %o not handled for file %s\n", stat.st_mode, fn);
-            }
-
-            currentDirNode->children[std::string(component)] = stat.st_ino;
+            auto node = std::make_unique<SymlinkNode>(currentDirNode->stat.st_ino, stat);
+            node->target = target;
+            nodes.push_back(std::move(node));
+        } else {
+            rpmlog(RPMLOG_WARNING, "Mode %o not handled for file %s\n", stat.st_mode, fn);
         }
+
+        currentDirNode->children[bn] = stat.st_ino;
     }
 
     return true;
@@ -377,6 +373,7 @@ void RepoVFS::opendir(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
 
 void RepoVFS::readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi)
 {
+    (void) ino;
     std::vector<char>* dirbuf = reinterpret_cast<std::vector<char>*>(fi->fh);
     if(!dirbuf)
     {
@@ -399,6 +396,7 @@ void RepoVFS::releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
 
 void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_file_info *file_info)
 {
+    (void) file_info;
     RepoVFS *that = reinterpret_cast<RepoVFS*>(fuse_req_userdata(req));
     auto node = that->nodeForIno(ino);
     if(!node)
@@ -447,6 +445,7 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
     if(!compr)
         compr = "gzip";
 
+    // Open the payload
     f = Fdopen(f, (std::string("r.") + compr).c_str());
     if(Ferror(f)) {
         rpmlog(RPMLOG_ERR, "Failed to reopen %s: %s", fileNode->pathOfPackage.c_str(), Fstrerror(f));
@@ -459,13 +458,11 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
     rpmfi fi = rpmfiNewArchiveReader(f, files, RPMFI_ITER_READ_ARCHIVE_CONTENT_FIRST);
     auto fiFree = Defer([&] { rpmfiFree(fi); });
 
+    // Iterate all files inside until the right one is found
     int rc = rpmfiNext(fi);
     for(; rc >= 0; rc = rpmfiNext(fi)) {
-        std::string_view path = rpmfiFN(fi);
-        if(path != fileNode->pathInPackage)
+        if(fileNode->pathInPackage != std::string_view(rpmfiFN(fi)))
             continue;
-
-        rpmlog(RPMLOG_DEBUG, "File %s found in %s\n", fileNode->pathInPackage.c_str(), fileNode->pathOfPackage.c_str());
 
         if(!rpmfiArchiveHasContent(fi)) {
             rpmlog(RPMLOG_ERR, "File %s is a hardlink, not supported yet\n", fileNode->pathInPackage.c_str());
@@ -478,7 +475,7 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
             char buf[1024];
             size_t step = std::min(sizeof(buf), size_t(off));
             auto skipped = rpmfiArchiveRead(fi, buf, step);
-            if(skipped < 0) {
+            if(skipped <= 0) {
                 fuse_reply_err(req, EIO);
                 return;
             }
@@ -486,12 +483,13 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
             off -= skipped;
         }
 
+        // Read (exactly) the specified size
         std::vector<char> buf;
         buf.resize(size);
         char *ptr = buf.data();
         while(size > 0) {
             auto sizeRead = rpmfiArchiveRead(fi, ptr, size);
-            if(sizeRead < 0) {
+            if(sizeRead <= 0) {
                 fuse_reply_err(req, EIO);
                 return;
             }
