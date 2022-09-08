@@ -109,8 +109,8 @@ RepoVFS::RepoVFS()
     // inode 0 is invalid
     nodes.push_back(nullptr);
 
-    // inode 1 is the root
-    makeDirNode(0);
+    // inode 1 is the root. It has itself as parent.
+    makeDirNode(1);
 }
 
 RepoVFS::~RepoVFS()
@@ -355,10 +355,7 @@ void RepoVFS::opendir(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
     auto dirbuf = std::make_unique<std::vector<char>>();
     appendDirentry(*dirbuf, req, ".", &node->stat);
 
-    Node* parentNode = that->nodeForIno(node->parentIno);
-    if(!parentNode)
-        parentNode = that->nodeForIno(0);
-    if(parentNode)
+    if(Node* parentNode = that->nodeForIno(node->parentIno); parentNode)
         appendDirentry(*dirbuf, req, "..", &parentNode->stat);
 
     for(auto ino : dirNode->children)
