@@ -57,6 +57,8 @@ struct RepoVFS::Node {
 
 struct RepoVFS::DirNode : public RepoVFS::Node {
     using Node::Node;
+    // Map of filename -> children inode.
+    // Use std::less<> to allow indexing with std::string_view
     std::map<std::string, fuse_ino_t, std::less<>> children;
 
     // Set to true if at least one package owns this.
@@ -67,7 +69,6 @@ struct RepoVFS::DirNode : public RepoVFS::Node {
 
 struct RepoVFS::FileNode : public RepoVFS::Node {
     using Node::Node;
-
     std::string pathOfPackage, pathInPackage;
 };
 
@@ -353,6 +354,9 @@ void RepoVFS::opendir(fuse_req_t req, fuse_ino_t ino, fuse_file_info *fi)
         return;
     }
 
+    // Prepare the whole buffer now, store it in fi->fh.
+    // readdir then just needs to reply with the requested slice.
+    // Finally it's deleted by releasedir.
     auto dirbuf = std::make_unique<std::vector<char>>();
     appendDirentry(*dirbuf, req, ".", &node->stat);
 
