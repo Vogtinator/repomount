@@ -100,7 +100,6 @@ TODO
 ----
 
 - Optimize performance of read requests
-- Support for hardlinked files
 - Support for absolute symlink targets  
   (maybe? If it was installed with `rpm --root` they'd be pointing to the "wrong" path as well)
 - Allow adding new RPMs while the filesystem is mounted by watching directories with inotify

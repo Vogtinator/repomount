@@ -66,7 +66,8 @@ struct RepoVFS::DirNode : public RepoVFS::Node {
 
 struct RepoVFS::FileNode : public RepoVFS::Node {
     using Node::Node;
-    std::string pathOfPackage, pathInPackage;
+    std::string pathOfPackage;
+    rpm_ino_t inoInPackage;
 };
 
 struct RepoVFS::SymlinkNode : public RepoVFS::Node {
@@ -148,6 +149,9 @@ bool RepoVFS::addRPM(const std::string& path)
     rpmfi fi = rpmfiNew(ts, hdr, RPMTAG_BASENAMES, RPMFI_NOHEADER | RPMFI_FLAGS_QUERY);
     auto fifree = Defer([&] { rpmfiFree(fi); });
 
+    // Data for handling hardlinks. Map package inodes to repomount inodes.
+    std::map<rpm_ino_t, fuse_ino_t> inodeMap;
+
     fi = rpmfiInit(fi, 0);
     while (rpmfiNext(fi) >= 0) {
         // Ignore %ghost files
@@ -221,10 +225,23 @@ bool RepoVFS::addRPM(const std::string& path)
         if (S_ISDIR(stat.st_mode)) {
             nodes.push_back(std::make_unique<DirNode>(currentDirNode->stat.st_ino, stat));
         } else if (S_ISREG(stat.st_mode)) {
+            if (stat.st_nlink > 1) {
+                // It's a hardlink. Does a node already exist?
+                if (auto it = inodeMap.find(rpmfiFInode(fi)); it != inodeMap.end()) {
+                    // Yes, use it.
+                    currentDirNode->children[bn] = it->second;
+                    continue;
+                }
+            }
+
             auto node = std::make_unique<FileNode>(currentDirNode->stat.st_ino, stat);
             node->pathOfPackage = path;
-            node->pathInPackage = fn;
+            node->inoInPackage = rpmfiFInode(fi);
             nodes.push_back(std::move(node));
+
+            // First hardlink created, add to map
+            if (stat.st_nlink > 1)
+                inodeMap[rpmfiFInode(fi)] = stat.st_ino;
         } else if (S_ISLNK(stat.st_mode)) {
             auto target = rpmfiFLink(fi);
             if (!target || target[0] == '/') {
@@ -454,20 +471,14 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
 
     rpmfiles files = rpmfilesNew(NULL, hdr, 0, RPMFI_KEEPHEADER);
     auto filesFree = Defer([&] { rpmfilesFree(files); });
-    rpmfi fi = rpmfiNewArchiveReader(f, files, RPMFI_ITER_READ_ARCHIVE_CONTENT_FIRST);
+    rpmfi fi = rpmfiNewArchiveReader(f, files, RPMFI_ITER_READ_ARCHIVE);
     auto fiFree = Defer([&] { rpmfiFree(fi); });
 
     // Iterate all files inside until the right one is found
     int rc = rpmfiNext(fi);
     for (; rc >= 0; rc = rpmfiNext(fi)) {
-        if (fileNode->pathInPackage != std::string_view(rpmfiFN(fi)))
+        if (rpmfiFInode(fi) != fileNode->inoInPackage || !rpmfiArchiveHasContent(fi))
             continue;
-
-        if (!rpmfiArchiveHasContent(fi)) {
-            rpmlog(RPMLOG_ERR, "File %s is a hardlink, not supported yet\n", fileNode->pathInPackage.c_str());
-            fuse_reply_err(req, EIO);
-            return;
-        }
 
         // Seek to the right offset
         while (off > 0) {
@@ -500,7 +511,7 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
         return;
     }
 
-    rpmlog(RPMLOG_ERR, "File %s not found in %s anymore\n", fileNode->pathInPackage.c_str(),
+    rpmlog(RPMLOG_ERR, "Content for inode %d not found in %s anymore\n", fileNode->inoInPackage,
         fileNode->pathOfPackage.c_str());
     fuse_reply_err(req, EIO);
 }
