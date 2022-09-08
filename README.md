@@ -92,7 +92,7 @@ as index. Directory nodes have a map of filename -> inode to address their child
 allows a rather simple implementation of the FUSE entry points.
 
 Read access to files is currently implemented in a trivial but incredibly inefficient way. Every
-file node stores a path to the containing package as well as its path inside the package. To perform
+file node stores a path to the containing package as well as its inode inside the package. To perform
 the read, the RPM package is opened and the (potentially compressed) payload iterated until the file
 is found and the requested data returned.
 
