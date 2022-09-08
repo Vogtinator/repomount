@@ -229,7 +229,7 @@ bool RepoVFS::addRPM(const std::string &path)
             } else if(S_ISLNK(stat.st_mode)) {
                 auto target = rpmfiFLink(fi);
                 if(!target || target[0] == '/') {
-                    rpmlog(RPMLOG_WARNING, "Symlink %s -> %s unhanlded\n", fn, target);
+                    rpmlog(RPMLOG_WARNING, "Symlink %s -> %s unhandled\n", fn, target);
                     continue;
                 }
 
@@ -465,7 +465,7 @@ void RepoVFS::read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, fuse_
         if(path != fileNode->pathInPackage)
             continue;
 
-        rpmlog(RPMLOG_NOTICE, "File %s found in %s\n", fileNode->pathInPackage.c_str(), fileNode->pathOfPackage.c_str());
+        rpmlog(RPMLOG_DEBUG, "File %s found in %s\n", fileNode->pathInPackage.c_str(), fileNode->pathOfPackage.c_str());
 
         if(!rpmfiArchiveHasContent(fi)) {
             rpmlog(RPMLOG_ERR, "File %s is a hardlink, not supported yet\n", fileNode->pathInPackage.c_str());
