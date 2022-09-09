@@ -90,7 +90,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    int ret = vfs.mountAndLoop(args, opts.mountpoint);
+    int ret = vfs.mountAndLoop(args, opts.mountpoint) ? 0 : 1;
     fuse_opt_free_args(&args);
     return ret;
 }
