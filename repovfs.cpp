@@ -224,6 +224,7 @@ bool RepoVFS::addRPM(const std::string &path)
         stat.st_ino = nodes.size();
         if (S_ISDIR(stat.st_mode)) {
             nodes.push_back(std::make_unique<DirNode>(currentDirNode->stat.st_ino, stat));
+            currentDirNode->children[bn] = stat.st_ino;
         } else if (S_ISREG(stat.st_mode)) {
             if (stat.st_nlink > 1) {
                 // It's a hardlink. Does a node already exist?
@@ -238,6 +239,7 @@ bool RepoVFS::addRPM(const std::string &path)
             node->pathOfPackage = path;
             node->inoInPackage = rpmfiFInode(fi);
             nodes.push_back(std::move(node));
+            currentDirNode->children[bn] = stat.st_ino;
 
             // First hardlink created, add to map
             if (stat.st_nlink > 1)
@@ -252,11 +254,10 @@ bool RepoVFS::addRPM(const std::string &path)
             auto node = std::make_unique<SymlinkNode>(currentDirNode->stat.st_ino, stat);
             node->target = target;
             nodes.push_back(std::move(node));
+            currentDirNode->children[bn] = stat.st_ino;
         } else {
             rpmlog(RPMLOG_WARNING, "Mode %o not handled for file %s\n", stat.st_mode, fn);
         }
-
-        currentDirNode->children[bn] = stat.st_ino;
     }
 
     return true;
